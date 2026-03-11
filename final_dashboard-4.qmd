@@ -1,0 +1,385 @@
+---
+title: " Chinese Public Diplomacy"
+author: "Yash Kulkarni, Evan Henshaw, Boru Arero"
+date: today
+format: 
+  dashboard:
+    theme: flatly
+    embed-resources: true
+    orientation: rows
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(plotly)
+
+# Load Data
+diplomacy <- read_csv("ChinesePublicDiplomacy.csv", na = "N/A") %>%
+  mutate(year = as.numeric(year))
+
+gdp <- read_csv("GDP.csv", skip = 4)
+
+# Clean GDP
+gdp_cleaned <- gdp %>%
+  select('Country Name', 'Country Code', '1999':'2022') %>%
+  pivot_longer(cols = '1999':'2022', names_to = "year", values_to = "gdp_usd") %>%
+  mutate(year = as.numeric(year)) %>%
+  rename(receiving_country = 'Country Name')
+
+# Join datasets
+joined <- diplomacy %>%
+  left_join(gdp_cleaned, by = c("receiving_country", "year"))
+
+# We use if_else to classify each country-year as "Large" or "Small" economy
+# based on whether its GDP exceeds the median. This lets us compare visit
+# patterns across economy sizes. An alternative without if_else would require
+# a separate summarize + join step, which is less readable and efficient.
+final_data <- joined %>%
+  mutate(
+    log_gdp = log(gdp_usd),
+    economy_size = if_else(gdp_usd > median(gdp_usd, na.rm = TRUE), "Large", "Small")
+  ) %>%
+  filter(!is.na(outbound_political_visits))
+```
+
+# Introduction
+
+## Row {height=10%}
+::: {.card}
+
+## INFO 201 · Lab BF · TA: Marco Guo | Exploring Chinese diplomatic strategy using data from Wang & Stone (2022) and the World Bank. | Yash Kulkarni, Evan Henshaw, Boru Arero
+:::
+
+## Row {height=85%}
+
+### Column {width=60%}
+
+::: {.card title="About This Project"}
+
+China has become one of the most important diplomatic players in the world today, but it can be hard to understand exactly what drives its foreign policy decisions. Unlike many Western countries where foreign policy is openly debated, China tends to operate more quietly behind the scenes, which is exactly why using data to analyze its behavior is so valuable. This project looks at two public datasets to explore where Chinese diplomats have traveled over time and whether the wealth of the countries they visit helps explain those choices. By combining records of diplomatic visits with GDP data from the World Bank, we can start to see patterns that would otherwise be hard to notice.
+
+Understanding where China directs its diplomatic energy matters to a lot of people beyond just researchers. Government officials, journalists, international businesses, and advocacy groups all benefit from clearer insight into how China is or is not engaging with different parts of the world. As [scholars at AidData have noted](https://www.aiddata.org/data/chinas-global-public-diplomacy-dashboard-dataset-version-3), China's global reach has grown significantly alongside its economy, from large infrastructure investments to new international institutions to an expanding web of high-level political visits.
+
+**Our three guiding questions:**
+
+1. Does China concentrate its diplomatic visits in economically large countries, or does it spread them more broadly across the developing world?
+2. Has the volume of Chinese diplomatic visits changed over time?
+3. Are there countries that receive disproportionately high diplomatic attention relative to their GDP, suggesting strategic motives beyond economics?
+
+**Data Context:**
+
+The China Global Public Diplomacy dataset was created by AidData, a research lab associated with William & Mary College with the intention of providing a clear, interactive view of the People’s Republic of China’s recent public diplomacy. The dataset has 4,793 recordings of 18 variables relating to Chinese diplomacy with a country during a given year from 1999-2021. Variables include sister cities established, inbound and outbound political visits and student exchanges, Confucius Institutes established, journalist visits, and CCP visits, among others. The data set includes every UN member (besides China), as well as Palestine, Macao, Hong Kong, and a few other dependencies. The sample is comprehensive and informative for our purposes, providing a list of the amount of connection China did or did not have with 207 different political entities over 2022 years, although this is lessened by the prevalence of NA values.
+
+
+
+The World Bank Group’s GDP dataset was compiled for their Data360 data portal using data from the Organization for Economic Co-operation and Development, nations’ official statistics, and World Bank Group staff estimates. The dataset contains 266 recordings of 70 variables. The GDP each year from 1960-2024 is stored as a separate variable for each country/region/income bracket, which are unified as a single observation; some nations do not have any GDP data until after 1960, and some nations’ data ends before 2024. The list of political entities included is largely the same as the China Global Public Policy dataset, although there are two omissions (Niue and the Cook Islands) and a few additions. This sample is incredibly helpful as the inclusion of GDPs over many years helps provide a broader picture of the way Chinese diplomatic focuses shift as GDP does, but the omission of a couple countries and lack of GDP data for some countries for more recent years lead to some gaps in our understanding.
+
+*The AidData China Global Public Diplomacy dataset can be found at [https://china-dashboard.aiddata.org/.](https://china-dashboard.aiddata.org/)*
+
+*The World Bank Group GDP dataset can be found at [https://data.worldbank.org/indicator/NY.GDP.MKTP.KD.](https://data.worldbank.org/indicator/NY.GDP.MKTP.KD)*
+:::
+
+### Column {width=40%}
+
+::: {.card title="Data Sources"}
+
+**Dataset 1: Chinese Public Diplomacy**
+
+Created by Wang & Stone (2022), published in [The Review of International Organizations](https://link.springer.com/article/10.1007/s11558-022-09459-z#Sec23
+). Covers 4,781 country-year observations of Chinese elite diplomatic visits from 1991–2021 across 190+ countries. Built from open-source intelligence since China does not publish this data publicly.
+
+**Dataset 2: World Bank GDP**
+
+Published by the [World Bank Group](https://data.worldbank.org/indicator/NY.GDP.MKTP.CD). GDP measured in current US dollars for 266 countries and territories from 1960 onward. We use 1999–2022 to align with the diplomacy dataset.
+
+**Limitations**
+
+- Countries with less English language media may be underrepresented
+- GDP does not capture military ties, resources, or political alignment
+- Data only tracks government officials, not citizen-level exchanges
+
+:::
+
+# Q1: Economy Size & Visits
+
+## Row {height=20%}
+
+::: {.card}
+**Question 1:** Does China concentrate its diplomatic visits in economically large countries, or does it distribute visits more broadly across the developing world?
+:::
+
+## Row {height=130%}
+
+### Column {width=50%}
+
+```{r q1-bar}
+
+intensity_data <- final_data %>%
+  filter(!is.na(economy_size)) %>%
+  group_by(economy_size) %>%
+  summarize(
+    total_visits = sum(outbound_political_visits, na.rm = TRUE),
+    total_gdp = sum(gdp_usd, na.rm = TRUE) / 1e12,
+    visit_intensity = total_visits / total_gdp
+  )
+
+ggplot(intensity_data, aes(x = economy_size, y = visit_intensity, fill = economy_size)) +
+  geom_col(width = 0.55) +
+  geom_text(aes(label = round(visit_intensity, 1)), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_manual(values = c("Large" = "#2c3e50", "Small" = "#c0392b")) +
+  labs(
+    title = "Diplomatic Intensity by Economy Size",
+    subtitle = "Visits per $1 trillion of GDP",
+    x = "Economy Size",
+    y = "Visits per $1T GDP",
+    caption = "Source: World Bank (2024)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+```
+
+### Column {width=50%}
+
+```{r}
+
+# We're using correlation coefficient here to quantify whether GDP predicts visit counts,
+# something we cannot get from a simple summarize or mutate alone.
+
+cor_val <- final_data %>%
+  filter(!is.na(gdp_usd)) %>%
+  summarize(r = round(cor(outbound_political_visits, gdp_usd, use = "complete.obs"), 3)) %>%
+  pull(r)
+
+p1 <- final_data %>%
+  filter(!is.na(gdp_usd)) %>%
+  ggplot(aes(x = log_gdp, y = outbound_political_visits, color = economy_size)) +
+  geom_point(alpha = 0.35, size = 1.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 1) +
+  scale_color_manual(values = c("Large" = "#2c3e50", "Small" = "#c0392b")) +
+  labs(
+    title = "Does GDP Predict Diplomatic Visits?",
+    subtitle = paste0("Log GDP vs. Visits  |  Correlation r = ", cor_val),
+    x = "Log GDP (USD)",
+    y = "Outbound Political Visits",
+    color = "Economy Size",
+    caption = "Source: World Bank (2024)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold"))
+
+ggplotly(p1, tooltip = "text")
+```
+
+::: {.card}
+**Insight:** The bar chart shows that smaller economies actually receive more visits per dollar of GDP, suggesting China does not simply chase the largest economies. The scatter plot confirms this with a weak positive correlation (r = `r cor_val`), meaning GDP alone does not explain where China sends its diplomats. Strategic and political factors are likely at play.
+:::
+
+# Q2: Visits Over Time
+
+## Row {height=20%}
+
+::: {.card}
+**Question 2:** Has the volume of Chinese diplomatic visits changed over time, and what does that trend reveal about China's growing global ambitions?
+:::
+
+## Row {height=130%}
+
+### Column {width=60%}
+
+```{r}
+
+visits_over_time <- final_data %>%
+  group_by(year) %>%
+  summarize(total_visits = sum(outbound_political_visits, na.rm = TRUE)) %>%
+  arrange(year)
+
+ggplot(visits_over_time, aes(x = year, y = total_visits)) +
+  geom_area(fill = "#c0392b", alpha = 0.15) +
+  geom_line(color = "#c0392b", linewidth = 1.4) +
+  geom_point(color = "#2c3e50", size = 2.5) +
+  scale_x_continuous(breaks = seq(1999, 2022, by = 3)) +
+  labs(
+    title = "Chinese Diplomatic Visits Over Time",
+    subtitle = "Total outbound political visits per year (1999–2022)",
+    x = "Year",
+    y = "Total Visits",
+    caption = "Source: Wang & Stone (2022)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+### Column {width=40%}
+
+```{r}
+# slice() is used here to extract the top and bottom years by visit count,
+# giving us the most and least active diplomatic years directly.
+top_years <- final_data %>%
+  group_by(year) %>%
+  summarize(total_visits = sum(outbound_political_visits, na.rm = TRUE)) %>%
+  arrange(desc(total_visits)) %>%
+  slice(1:5)
+
+ggplot(top_years, aes(x = reorder(as.character(year), total_visits), 
+                       y = total_visits, fill = total_visits)) +
+  geom_col(width = 0.65) +
+  coord_flip() +
+  scale_fill_gradient(low = "#f1948a", high = "#922b21") +
+  labs(
+    title = "Top 5 Most Active Diplomatic Years",
+    subtitle = "Years with the highest total visits",
+    x = "Year",
+    y = "Total Visits",
+    fill = "Visits"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "none")
+```
+
+::: {.card}
+**Insight:** Chinese diplomatic activity has grown substantially over time, with the sharpest increases occurring after 2005 coinciding with China's accelerating economic rise and its push to expand influence through the Belt and Road Initiative. The top years chart highlights the specific years where China was most diplomatically active globally.
+:::
+
+# Q3: Geographic Distribution
+
+## Row {height=20%}
+
+::: {.card}
+**Question 3:** Are there countries that receive disproportionately high diplomatic attention relative to their GDP, suggesting strategic or geopolitical motives beyond pure economic interest?
+:::
+
+## Row {height=130%}
+
+```{r}
+# Novel Tool: Maps using sf and rnaturalearth
+# The benefit of mapping is that we can visualize geographic and regional
+# clustering of Chinese diplomacy at a glance, something impossible with
+# bar charts or scatter plots alone. We can immediately see which continents
+# and regions receive the most attention, not just which individual countries.
+# We could not replicate this geographic insight using only the basic tools.
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+map_data_agg <- final_data %>%
+  group_by(receiving_country) %>%
+  summarize(total_visits = sum(outbound_political_visits, na.rm = TRUE))
+
+world_joined <- world %>%
+  left_join(map_data_agg, by = c("name" = "receiving_country"))
+
+ggplot(data = world_joined) +
+  geom_sf(aes(fill = total_visits), color = "white", linewidth = 0.15) +
+  scale_fill_gradient(
+    low = "#f9ebea",
+    high = "#922b21",
+    na.value = "grey88",
+    name = "Total Visits",
+    labels = scales::comma
+  ) +
+  labs(
+    title = "Where Does China Send Its Diplomats?",
+    subtitle = "Cumulative outbound political visits by country (1999–2022)",
+    caption = "Grey = no data available  |  Source: Wang & Stone (2022)"
+  ) +
+  theme_void(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey40"),
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm")
+  )
+```
+
+::: {.card}
+**Insight:**
+
+The map reveals that China's diplomatic attention is heavily concentrated in Asia and Africa, with comparatively fewer visits to Europe and the Americas. This geographic pattern suggests China's diplomacy is shaped by regional proximity, Belt and Road partnerships, and political alignment not just economic size. Countries in sub Saharan Africa receive notable attention despite having smaller GDPs, pointing to strategic resource and political motivations.
+:::
+
+# Documentation
+
+## Row
+
+### Column {width=50%}
+
+::: {.card title="Conclusions"}
+
+Our analysis of Chinese diplomatic visits from 1999 to 2022 reveals three major takeaways. First, China does not simply concentrate its diplomacy on the world's wealthiest countries. When we measured visit intensity the number of visits relative to a country's GDP, smaller economies actually received more diplomatic attention per dollar than larger ones. This suggests that China's foreign policy is driven by more than just economic interest, and that factors like political alignment, natural resources, and regional influence likely play a significant role in where diplomats are sent.
+
+Second, Chinese diplomatic activity has grown substantially over time. The line chart in our analysis shows a clear upward trend in total visits after the mid-2000s, which aligns with China's broader economic rise and its push to expand global influence through initiatives like the Belt and Road. This growth was not evenly distributed, certain years saw dramatic spikes in activity, suggesting that specific political events or foreign policy priorities drove bursts of diplomatic engagement.
+
+Third, the geographic distribution of visits is far from uniform. The world map shows that Asia and Africa receive the heaviest concentration of Chinese diplomatic attention, while Europe and the Americas are visited far less frequently. This pattern likely reflects a mix of geographic proximity, resource interests in Africa, and geopolitical tensions with Western nations. The weak correlation we found between GDP and visit counts further supports the idea that economic size alone does not explain China's diplomatic choices. It is worth noting that our analysis likely underestimates Chinese diplomatic activity in regions with less English language media coverage, such as parts of Central Asia and sub Saharan Africa, since the dataset was built from opensource news reporting.
+
+:::
+
+### Column {width=50%}
+
+::: {.card title="Notes & References"}
+
+Our group used INFO 201 lectures and R for Data Science (2e) by Hadley Wickham as our main references throughout this project. We also consulted online documentation and tutorials when we ran into challenges not covered in class.
+
+**Tools not covered in class:**
+
+**cor()**- calculates the Pearson correlation coefficient, measuring how strongly two variables are related on a scale from -1 to +1. We needed this to get a single number summarizing the GDP-visits relationship, which summarize alone cannot produce. We learned it from R for Data Science (2e) and [StatMethods.net](https://www.statmethods.net/stats/correlations.html).
+
+**geom_sf() / ne_countries()**- draws country maps with political boundaries filled by data values. Regular ggplot2 geoms cannot plot geographic shapes. We learned this from the rnaturalearth package documentation and [r-spatial.org](https://r-spatial.org/r/2018/10/25/ggplot2-sf.html).
+
+**References**
+
+- Wickham, H. R for Data Science (2e): [r4ds.hadley.nz](https://r4ds.hadley.nz)
+- Left Join: [youtube.com](https://www.youtube.com/watch?v=r2PzjywsVXE)
+- Data Cleaning: [youtube.com](https://www.youtube.com/watch?v=Ap1Q2fkqO_I)
+- Wide to Long: [tidyr.tidyverse.org](https://tidyr.tidyverse.org/reference/pivot_longer.html)
+
+:::
+
+#  Group Information
+
+## Row
+
+### Column {width=33%}
+
+::: {.card title="Yash Kulkarni"}
+
+**Informatics & Economics, University of Washington**
+
+ykulk43\@uw.edu
+
+Yash is interested in how economic data can illuminate strategic behavior in international politics, particularly in the context of emerging economies. He led the data joining, wrangling, and visualization portions of this project, and is pursuing interests in Software Engineering and Financial Technology.
+
+:::
+
+### Column {width=33%}
+
+::: {.card title="Evan Henshaw"}
+
+**University of Washington**
+
+ehens424\@uw.edu
+
+Evan contributed to the analysis and interpretation of diplomatic visit patterns across regions, with a keen interest in geopolitical dynamics and how quantitative methods can help demystify complex international relationships.
+
+:::
+
+### Column {width=33%}
+
+::: {.card title="Boru Arero"}
+
+**Informatics, University of Washington**
+
+barero\@uw.edu
+
+Boru is interested in Information Systems and Technology Design. He contributed to data documentation, ethical framing, and visualization design for this project, and is particularly interested in how data tools can increase transparency in political institutions.
+
+:::
